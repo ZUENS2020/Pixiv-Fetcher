@@ -234,8 +234,11 @@ async function runTranslate(
   if (start.status === "error") throw new Error(start.error || "翻译失败");
   if (!start.jobId) throw new Error("未能创建后台翻译任务");
   const jobId = start.jobId;
+  const abort = () => {
+    void cancelTranslateJob(jobId);
+  };
   if (opts?.signal?.aborted) {
-    await cancelTranslateJob(jobId);
+    abort();
     throw new DOMException("已停止翻译", "AbortError");
   }
   opts?.signal?.addEventListener("abort", abort, { once: true });
