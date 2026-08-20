@@ -1,0 +1,29 @@
+{
+  "name": "pixiv-fetcher",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build && wrangler d1 migrations apply pixiv-fetcher --local && wrangler dev",
+    "dev:web": "vite build --watch",
+    "build": "vite build",
+    "deploy": "vite build && wrangler d1 migrations apply pixiv-fetcher --remote && wrangler deploy",
+    "preview": "vite build && wrangler dev",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:session": "vitest run && node scripts/test-pixiv-session.mjs",
+    "relay": "node relay/server.mjs"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.3.0",
+    "client-zip": "^2.5.0",
+    "hono": "^4.13.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.124.0"
+  }
+}

@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local `wrangler dev`. Do not commit .dev.vars.
+COOKIE_ENC_KEY=replace-me-with-a-long-random-string
+
+# Optional local relay (`npm run relay` listens on 8788):
+# PIXIV_RELAY_URL=http://127.0.0.1:8788
+# PIXIV_RELAY_SECRET=replace-me-with-a-long-random-string

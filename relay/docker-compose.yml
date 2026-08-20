@@ -1,0 +1,9 @@
+services:
+  pixiv-relay:
+    build: .
+    container_name: pixiv-relay
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Host loopback only; put HTTPS (tunnel / nginx) in front.
+      - "127.0.0.1:8789:8788"
