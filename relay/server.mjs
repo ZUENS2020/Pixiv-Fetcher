@@ -8,10 +8,7 @@
  *   wrangler secret put PIXIV_RELAY_SECRET
  */
 import http from "node:http";
-import { Agent, setGlobalDispatcher } from "undici";
 import { applyDeltas, parseSseChunk } from "./openai-stream.mjs";
-
-setGlobalDispatcher(new Agent({ connections: 16, pipelining: 0 }));
 
 const PORT = Number(process.env.PORT || 8788);
 const SECRET = process.env.RELAY_SECRET || "";
