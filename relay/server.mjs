@@ -8,7 +8,10 @@
  *   wrangler secret put PIXIV_RELAY_SECRET
  */
 import http from "node:http";
+import { Agent, setGlobalDispatcher } from "undici";
 import { applyDeltas, parseSseChunk } from "./openai-stream.mjs";
+
+setGlobalDispatcher(new Agent({ connections: 16, pipelining: 0 }));
 
 const PORT = Number(process.env.PORT || 8788);
 const SECRET = process.env.RELAY_SECRET || "";
@@ -237,6 +240,7 @@ function pump() {
   while (running < MAX_JOBS && queue.length) {
     const job = queue.shift();
     running += 1;
+    console.log("start", job.id, "running", running, "queue", queue.length);
     void runJob(job);
   }
 }
@@ -295,8 +299,9 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       queue.push(payload);
-      void pump();
       json(res, 202, { ok: true, jobId: payload.id, queued: true });
+      console.log("queued", payload.id, "running", running, "queue", queue.length);
+      setImmediate(() => pump());
       return;
     }
     json(res, 404, { error: "not found" });
