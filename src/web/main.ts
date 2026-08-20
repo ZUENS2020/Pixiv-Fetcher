@@ -795,6 +795,7 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
 
   btn.addEventListener("click", async () => {
     btn.disabled = true;
+    setView("dst");
     dst.className = "dst doc empty";
     dst.textContent = "已交给后台容器翻译，篇幅较长时可离开本页稍后回来…";
     hint.textContent = "排队中…";
