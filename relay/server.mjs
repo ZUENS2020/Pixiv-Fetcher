@@ -8,9 +8,11 @@
  *   wrangler secret put PIXIV_RELAY_SECRET
  */
 import http from "node:http";
+import { applyDeltas, parseSseChunk } from "./openai-stream.mjs";
 
 const PORT = Number(process.env.PORT || 8788);
 const SECRET = process.env.RELAY_SECRET || "";
+const IDLE_MS = 3 * 60_000;
 
 const TRANSLATE_SYSTEM = `你是专业文学翻译，把用户给出的已授权离线文本译成指定目标语言。
 文本可能含成人向、R-18、R-18G（含血腥、性暴力、猎奇等文学描写）。
@@ -20,6 +22,8 @@ const TRANSLATE_SYSTEM = `你是专业文学翻译，把用户给出的已授权
 2. 保留角色口吻、粗俗用语力度、拟声词与专有名词。
 3. 只输出译文正文，不要前言、解释或 markdown 标题。保持原文段落与换行。
 4. 原文中的 [newpage]、[uploadedimage:数字] 等标记原样保留。`;
+
+const controllers = new Map();
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -46,67 +50,6 @@ function chatCompletionsUrl(base) {
   return `${u}/chat/completions`;
 }
 
-async function translateDocument(payload) {
-  const llm = payload.llm || {};
-  const url = chatCompletionsUrl(llm.baseUrl);
-  if (!url || !llm.apiKey || !llm.model) {
-    throw new Error("LLM 配置不完整");
-  }
-  const extra = String(payload.extraPrompt || "").trim();
-  const system = extra ? `${TRANSLATE_SYSTEM}\n\n用户附加要求：\n${extra}` : TRANSLATE_SYSTEM;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10 * 60_000);
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      signal: ctrl.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${llm.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: llm.model,
-        temperature: 0.2,
-        max_tokens: 16384,
-        messages: [
-          { role: "system", content: system },
-          {
-            role: "user",
-            content: `目标语言：${payload.targetLang || "zh-CN"}\n请把下面整篇作品一次译完，保持原有段落与换行，不要拆成条目或摘要。\n\n原文：\n${payload.source}`,
-          },
-        ],
-      }),
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") throw new Error("LLM 请求超时");
-    throw new Error("无法连接 LLM API");
-  } finally {
-    clearTimeout(timer);
-  }
-  const raw = await res.text();
-  if (!res.ok) {
-    let detail = raw.slice(0, 400);
-    try {
-      const parsed = JSON.parse(raw);
-      if (typeof parsed.error === "string") detail = parsed.error;
-      else if (parsed.error?.message) detail = parsed.error.message;
-    } catch {
-      /* keep slice */
-    }
-    throw new Error(`LLM 返回 ${res.status}：${detail}`);
-  }
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error("LLM 返回了非 JSON");
-  }
-  const text = data.choices?.[0]?.message?.content?.trim() || "";
-  if (!text) throw new Error("LLM 没有返回译文");
-  return text;
-}
-
 async function callback(job, body) {
   if (!job.callbackUrl || !String(job.callbackUrl).startsWith("https://")) return;
   await fetch(job.callbackUrl, {
@@ -119,38 +62,110 @@ async function callback(job, body) {
   });
 }
 
-const queue = [];
-const MAX_JOBS = Math.max(1, Number(process.env.RELAY_CONCURRENCY || 5) || 5);
-let running = 0;
+function reportProgress(job, text, state) {
+  const now = Date.now();
+  if (text.length === state.lastLen) return;
+  if (now - state.lastAt < 600 && text.length - state.lastLen < 40) return;
+  state.lastAt = now;
+  state.lastLen = text.length;
+  void callback(job, { jobId: job.id, status: "running", translated: text }).catch((err) => {
+    console.error("progress callback failed", job.id, err);
+  });
+}
 
-async function runJob(job) {
+async function readChatStream(res, onDelta, signal) {
+  if (!res.body) throw new Error("LLM 没有返回数据流");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let idle;
+  let timedOut = false;
+  const armIdle = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      timedOut = true;
+      try {
+        void reader.cancel();
+      } catch {
+        /* ignore */
+      }
+    }, IDLE_MS);
+  };
+  armIdle();
   try {
-    if (job.type === "translate") {
-      const translated = await translateDocument(job.payload || {});
-      await callback(job, { jobId: job.id, status: "done", translated });
-    } else {
-      throw new Error(`未知任务 ${job.type}`);
+    while (true) {
+      if (signal.aborted) throw new DOMException("aborted", "AbortError");
+      const { done, value } = await reader.read();
+      if (done) break;
+      armIdle();
+      const parsed = parseSseChunk(buf, dec.decode(value, { stream: true }));
+      buf = parsed.rest;
+      if (parsed.deltas.length) onDelta(parsed.deltas);
+      if (parsed.done) break;
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "后台任务失败";
-    console.error("job failed", job.id, message);
-    try {
-      await callback(job, { jobId: job.id, status: "error", error: message });
-    } catch (cbErr) {
-      console.error("job callback failed", job.id, cbErr);
+    if (timedOut) throw new Error("LLM 输出中断（长时间无新内容）");
+    if (buf.trim()) {
+      const parsed = parseSseChunk(`${buf}\n`, "");
+      if (parsed.deltas.length) onDelta(parsed.deltas);
     }
   } finally {
-    running -= 1;
-    void pump();
+    clearTimeout(idle);
   }
 }
 
-function pump() {
-  while (running < MAX_JOBS && queue.length) {
-    const job = queue.shift();
-    running += 1;
-    void runJob(job);
+async function translateDocument(payload, signal, onPartial) {
+  const llm = payload.llm || {};
+  const url = chatCompletionsUrl(llm.baseUrl);
+  if (!url || !llm.apiKey || !llm.model) {
+    throw new Error("LLM 配置不完整");
   }
+  const extra = String(payload.extraPrompt || "").trim();
+  const system = extra ? `${TRANSLATE_SYSTEM}\n\n用户附加要求：\n${extra}` : TRANSLATE_SYSTEM;
+  const res = await fetch(url, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${llm.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: llm.model,
+      temperature: 0.2,
+      stream: true,
+      reasoning: { enabled: false },
+      messages: [
+        { role: "system", content: system },
+        {
+          role: "user",
+          content: `目标语言：${payload.targetLang || "zh-CN"}\n请把下面整篇作品一次译完，保持原有段落与换行，不要拆成条目或摘要。\n\n原文：\n${payload.source}`,
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    const raw = await res.text();
+    let detail = raw.slice(0, 400);
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.error === "string") detail = parsed.error;
+      else if (parsed.error?.message) detail = parsed.error.message;
+    } catch {
+      /* keep slice */
+    }
+    throw new Error(`LLM 返回 ${res.status}：${detail}`);
+  }
+  let acc = { content: "", reasoning: "" };
+  await readChatStream(
+    res,
+    (deltas) => {
+      acc = applyDeltas(acc, deltas);
+      onPartial(acc.content);
+    },
+    signal,
+  );
+  const text = acc.content.trim();
+  if (!text) throw new Error("LLM 没有返回译文");
+  return text;
 }
 
 async function handleForward(payload, res) {
@@ -175,6 +190,71 @@ async function handleForward(payload, res) {
   res.end(text);
 }
 
+const queue = [];
+const MAX_JOBS = Math.max(1, Number(process.env.RELAY_CONCURRENCY || 5) || 5);
+let running = 0;
+
+async function runJob(job) {
+  const ctrl = new AbortController();
+  controllers.set(job.id, ctrl);
+  const progress = { lastAt: 0, lastLen: 0 };
+  try {
+    if (job.type === "translate") {
+      const translated = await translateDocument(job.payload || {}, ctrl.signal, (text) => {
+        reportProgress(job, text, progress);
+      });
+      if (ctrl.signal.aborted) throw new DOMException("aborted", "AbortError");
+      await callback(job, { jobId: job.id, status: "done", translated });
+    } else {
+      throw new Error(`未知任务 ${job.type}`);
+    }
+  } catch (err) {
+    const aborted = err instanceof Error && (err.name === "AbortError" || err.message === "aborted");
+    if (aborted) {
+      console.error("job cancelled", job.id);
+      try {
+        await callback(job, { jobId: job.id, status: "cancelled", error: "已停止" });
+      } catch (cbErr) {
+        console.error("job callback failed", job.id, cbErr);
+      }
+    } else {
+      const message = err instanceof Error ? err.message : "后台任务失败";
+      console.error("job failed", job.id, message);
+      try {
+        await callback(job, { jobId: job.id, status: "error", error: message });
+      } catch (cbErr) {
+        console.error("job callback failed", job.id, cbErr);
+      }
+    }
+  } finally {
+    controllers.delete(job.id);
+    running -= 1;
+    void pump();
+  }
+}
+
+function pump() {
+  while (running < MAX_JOBS && queue.length) {
+    const job = queue.shift();
+    running += 1;
+    void runJob(job);
+  }
+}
+
+function cancelJob(id) {
+  const ctrl = controllers.get(id);
+  if (ctrl) {
+    ctrl.abort();
+    return true;
+  }
+  const idx = queue.findIndex((j) => j.id === id);
+  if (idx >= 0) {
+    queue.splice(idx, 1);
+    return true;
+  }
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
   const path = (req.url || "/").split("?")[0];
   if (req.method === "GET" && path === "/health") {
@@ -184,6 +264,13 @@ const server = http.createServer(async (req, res) => {
 
   if (!authorized(req)) {
     json(res, 401, { error: "unauthorized" });
+    return;
+  }
+
+  const cancelMatch = path.match(/^\/jobs\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && cancelMatch) {
+    const stopped = cancelJob(decodeURIComponent(cancelMatch[1]));
+    json(res, 200, { ok: true, stopped });
     return;
   }
 

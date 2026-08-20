@@ -35,10 +35,11 @@ if [[ -n "$SSH_HOST" ]]; then
       "$ROOT/relay/Dockerfile" \
       "$ROOT/relay/docker-compose.yml" \
       "$ROOT/relay/server.mjs" \
+      "$ROOT/relay/openai-stream.mjs" \
       "$ENV_FILE" \
       "$SSH_HOST:$REMOTE_DIR/"
   else
-    scp "$ROOT/relay/Dockerfile" "$ROOT/relay/docker-compose.yml" "$ROOT/relay/server.mjs" "$ENV_FILE" "$SSH_HOST:$REMOTE_DIR/"
+    scp "$ROOT/relay/Dockerfile" "$ROOT/relay/docker-compose.yml" "$ROOT/relay/server.mjs" "$ROOT/relay/openai-stream.mjs" "$ENV_FILE" "$SSH_HOST:$REMOTE_DIR/"
   fi
   echo "==> docker compose up"
   ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose up -d --build"

@@ -167,8 +167,22 @@ function extractUrls(raw: string): string[] {
   return extractPixivUrls(raw);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("已停止翻译", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("已停止翻译", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 const TRANSLATE_CONCURRENCY = 5;
@@ -187,16 +201,28 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T, index: numbe
 }
 
 type TranslateJob = {
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   jobId?: string;
   translated?: string;
   cached?: boolean;
   error?: string;
 };
 
+async function cancelTranslateJob(jobId: string) {
+  try {
+    await api(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+  } catch {
+    /* job may already be gone */
+  }
+}
+
 async function runTranslate(
   workId: number,
-  onProgress?: (msg: string) => void,
+  opts?: {
+    onProgress?: (msg: string) => void;
+    onPartial?: (text: string) => void;
+    signal?: AbortSignal;
+  },
 ): Promise<{ translated: string; cached: boolean }> {
   const start = await api<TranslateJob>("/api/translate", {
     method: "POST",
@@ -207,17 +233,35 @@ async function runTranslate(
   }
   if (start.status === "error") throw new Error(start.error || "翻译失败");
   if (!start.jobId) throw new Error("未能创建后台翻译任务");
-  onProgress?.("已交给 Docker 后台，正在翻译…");
-  for (let i = 0; i < 240; i += 1) {
-    await sleep(2000);
-    const job = await api<TranslateJob>(`/api/jobs/${start.jobId}`);
-    if (job.status === "done" && job.translated) {
-      return { translated: job.translated, cached: false };
-    }
-    if (job.status === "error") throw new Error(job.error || "翻译失败");
-    onProgress?.(`后台翻译中（${(i + 1) * 2}s）…`);
+  const jobId = start.jobId;
+  if (opts?.signal?.aborted) {
+    await cancelTranslateJob(jobId);
+    throw new DOMException("已停止翻译", "AbortError");
   }
-  throw new Error("仍在后台翻译，请稍后刷新阅读页");
+  opts?.signal?.addEventListener("abort", abort, { once: true });
+  opts?.onProgress?.("已交给 Docker 后台，正在翻译…");
+  const started = Date.now();
+  try {
+    for (;;) {
+      if (opts?.signal?.aborted) throw new DOMException("已停止翻译", "AbortError");
+      if (Date.now() - started > 45 * 60_000) {
+        throw new Error("仍在后台翻译，请稍后刷新阅读页");
+      }
+      await sleep(400, opts?.signal);
+      const job = await api<TranslateJob>(`/api/jobs/${jobId}`, { signal: opts?.signal });
+      if (job.translated) opts?.onPartial?.(job.translated);
+      if (job.status === "done" && job.translated) {
+        return { translated: job.translated, cached: false };
+      }
+      if (job.status === "error") throw new Error(job.error || "翻译失败");
+      if (job.status === "cancelled") throw new DOMException("已停止翻译", "AbortError");
+      opts?.onProgress?.(
+        job.translated ? `已输出 ${job.translated.length} 字…` : "正在生成译文…",
+      );
+    }
+  } finally {
+    opts?.signal?.removeEventListener("abort", abort);
+  }
 }
 
 function startDownload(href: string) {
@@ -438,7 +482,7 @@ async function renderSettings(root: HTMLElement, session: Session) {
     </div>
     <div class="card">
       <h2>翻译 LLM</h2>
-      <p class="help">OpenAI 兼容接口（DeepSeek / OpenRouter / Ollama / LM Studio 等）。密钥加密写入 D1；全文翻译在 Docker 中继后台跑，不占用 Worker 时限。</p>
+      <p class="help">OpenAI 兼容接口（DeepSeek / OpenRouter / Ollama / LM Studio 等）。密钥加密写入 D1；全文翻译在 Docker 中继里流式生成，阅读页可随时停止。不设 max_tokens。</p>
       <label for="llmBase">Base URL</label>
       <input type="url" id="llmBase" placeholder="https://api.deepseek.com/v1" />
       <label for="llmModel">模型名</label>
@@ -757,9 +801,12 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
   let translated = data.translation || "";
   const initialView = translated ? "dst" : "src";
   const bar = $(`<div class="reader-toolbar">
-    <button type="button" class="tonal" id="trAll" ${data.llm.configured ? "" : "disabled"}>翻译全文</button>
+    <div class="reader-actions">
+      <button type="button" class="tonal" id="trAll" ${data.llm.configured ? "" : "disabled"}>翻译全文</button>
+      <button type="button" class="ghost" id="trStop" hidden>停止</button>
+    </div>
     <a class="btn ghost" href="/settings">LLM 设置</a>
-    <p class="help reader-hint" id="trHint">${data.llm.configured ? `目标：${escapeHtml(data.llm.targetLang)} · ${escapeHtml(data.llm.model)} · 后台 Docker` : "未配置 LLM，只能看原文"}</p>
+    <p class="help reader-hint" id="trHint">${data.llm.configured ? `目标：${escapeHtml(data.llm.targetLang)} · ${escapeHtml(data.llm.model)} · 流式后台` : "未配置 LLM，只能看原文"}</p>
   </div>`);
   const tabs = $(`<div class="reader-tabs" role="tablist" aria-label="原文或译文">
     <button type="button" role="tab" data-view="dst" ${initialView === "dst" ? 'aria-selected="true"' : ""}>译文</button>
@@ -780,6 +827,8 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
   const hint = bar.querySelector("#trHint") as HTMLElement;
   const dst = pair.querySelector("#dst") as HTMLElement;
   const btn = bar.querySelector("#trAll") as HTMLButtonElement;
+  const stopBtn = bar.querySelector("#trStop") as HTMLButtonElement;
+  let activeAbort: AbortController | null = null;
 
   function setView(view: string) {
     pair.dataset.view = view;
@@ -793,16 +842,32 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
     if (tab?.dataset.view) setView(tab.dataset.view);
   });
 
+  stopBtn.addEventListener("click", () => {
+    activeAbort?.abort();
+  });
+
   btn.addEventListener("click", async () => {
+    const ac = new AbortController();
+    activeAbort = ac;
     btn.disabled = true;
+    stopBtn.hidden = false;
+    stopBtn.disabled = false;
     setView("dst");
+    let streamText = "";
     dst.className = "dst doc empty";
-    dst.textContent = "已交给后台容器翻译，篇幅较长时可离开本页稍后回来…";
+    dst.textContent = "正在排队…";
     hint.textContent = "排队中…";
     try {
-      const r = await runTranslate(data.id, (msg) => {
-        hint.textContent = msg;
-        dst.textContent = msg;
+      const r = await runTranslate(data.id, {
+        signal: ac.signal,
+        onPartial: (text) => {
+          streamText = text;
+          dst.className = "dst doc";
+          dst.textContent = text;
+        },
+        onProgress: (msg) => {
+          hint.textContent = msg;
+        },
       });
       translated = r.translated;
       dst.className = "dst doc";
@@ -810,10 +875,26 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
       hint.textContent = r.cached ? "已使用缓存译文" : "全文翻译完成";
       setView("dst");
     } catch (err) {
-      dst.className = "dst doc empty";
-      dst.textContent = err instanceof Error ? err.message : "翻译失败";
-      hint.textContent = err instanceof Error ? err.message : "翻译失败";
+      const stopped =
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.message === "已停止翻译");
+      if (stopped) {
+        hint.textContent = streamText ? `已停止，已保留 ${streamText.length} 字` : "已停止翻译";
+        if (!streamText) {
+          dst.className = "dst doc empty";
+          dst.textContent = "已停止翻译";
+        }
+      } else {
+        hint.textContent = err instanceof Error ? err.message : "翻译失败";
+        if (!streamText) {
+          dst.className = "dst doc empty";
+          dst.textContent = err instanceof Error ? err.message : "翻译失败";
+        }
+      }
     } finally {
+      stopBtn.hidden = true;
+      stopBtn.disabled = true;
+      activeAbort = null;
       btn.disabled = !data.llm.configured;
     }
   });

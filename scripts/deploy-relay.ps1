@@ -24,7 +24,7 @@ if (-not $relaySecret -or $relaySecret -eq "change-me-to-a-long-random-string") 
 if ($SshHost) {
   Write-Host "Sync to ${SshHost}:${RemoteDir}"
   ssh $SshHost "mkdir -p $RemoteDir"
-  scp "$Root\relay\Dockerfile" "$Root\relay\docker-compose.yml" "$Root\relay\server.mjs" $EnvFile "${SshHost}:${RemoteDir}/"
+  scp "$Root\relay\Dockerfile" "$Root\relay\docker-compose.yml" "$Root\relay\server.mjs" "$Root\relay\openai-stream.mjs" $EnvFile "${SshHost}:${RemoteDir}/"
   Write-Host "Docker compose up"
   ssh $SshHost "cd $RemoteDir; docker compose up -d --build"
 } else {

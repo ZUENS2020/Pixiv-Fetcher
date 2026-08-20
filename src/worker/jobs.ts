@@ -22,10 +22,12 @@ export function isStaleJob(updatedAt: number, now = Date.now(), maxMs = STALE_JO
 }
 
 export function publicJob(row: JobRow) {
+  const status = row.status as "queued" | "running" | "done" | "error" | "cancelled";
+  const showText = status === "done" || status === "running" || status === "cancelled";
   return {
     jobId: row.id,
-    status: row.status as "queued" | "running" | "done" | "error",
-    translated: row.status === "done" ? row.result || undefined : undefined,
+    status,
+    translated: showText ? row.result || undefined : undefined,
     error: row.error || undefined,
   };
 }
@@ -141,5 +143,24 @@ export async function enqueueTranslateJob(
       /* ignore */
     }
     throw new PixivError(msg, res.status >= 400 && res.status < 500 ? 400 : 502, "upstream");
+  }
+}
+
+export async function cancelRelayJob(env: Env, jobId: string): Promise<void> {
+  const relayBase = env.PIXIV_RELAY_URL?.replace(/\/$/, "");
+  const secret = env.PIXIV_RELAY_SECRET;
+  if (!relayBase || !secret) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8_000);
+  try {
+    await fetch(`${relayBase}/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+  } catch {
+    /* reader already stopped; relay may have finished */
+  } finally {
+    clearTimeout(timer);
   }
 }

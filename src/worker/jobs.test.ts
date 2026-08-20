@@ -25,8 +25,22 @@ describe("isStaleJob", () => {
 });
 
 describe("publicJob", () => {
-  it("only exposes translation when done", () => {
+  it("hides queued drafts", () => {
     expect(publicJob(base).translated).toBeUndefined();
+  });
+
+  it("exposes partial text while running so the reader can stream", () => {
+    expect(publicJob({ ...base, status: "running", result: "仓" }).translated).toBe("仓");
+  });
+
+  it("keeps stopped text after cancel", () => {
+    const row = publicJob({ ...base, status: "cancelled", result: "仓库", error: "已停止" });
+    expect(row.status).toBe("cancelled");
+    expect(row.translated).toBe("仓库");
+    expect(row.error).toBe("已停止");
+  });
+
+  it("exposes translation when done", () => {
     expect(publicJob({ ...base, status: "done", result: "译文" }).translated).toBe("译文");
   });
 });

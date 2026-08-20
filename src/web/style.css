@@ -407,6 +407,16 @@ button:disabled {
   margin-bottom: 16px;
 }
 
+.reader-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.reader-actions button {
+  min-height: 40px;
+}
+
 .reader-hint {
   margin: 0;
   flex: 1 1 100%;

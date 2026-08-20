@@ -36,7 +36,7 @@ export async function chatComplete(
       body: JSON.stringify({
         model: cfg.model,
         temperature: 0.2,
-        max_tokens: 16384,
+        reasoning: { enabled: false },
         messages,
       }),
     });

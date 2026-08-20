@@ -26,6 +26,7 @@ import { getCachedTranslation, readLlm, saveTranslation, toPublic, writeLlm } fr
 import { testLlm } from "./llm";
 import { sha256Hex } from "./text";
 import {
+  cancelRelayJob,
   enqueueTranslateJob,
   findActiveTranslateJob,
   getJob,
@@ -339,6 +340,19 @@ app.get("/api/jobs/:id", async (c) => {
   return c.json(publicJob(row));
 });
 
+app.post("/api/jobs/:id/cancel", async (c) => {
+  const jobId = c.req.param("id");
+  const row = await getJob(c.env, jobId);
+  if (!row) return c.json({ error: "任务不存在" }, 404);
+  if (row.status === "done" || row.status === "error" || row.status === "cancelled") {
+    return c.json(publicJob(row));
+  }
+  await markJob(c.env, jobId, "cancelled", null, "已停止");
+  await cancelRelayJob(c.env, jobId);
+  const next = await getJob(c.env, jobId);
+  return c.json(next ? publicJob(next) : { jobId, status: "cancelled", error: "已停止" });
+});
+
 app.post("/api/internal/jobs/complete", async (c) => {
   if (!relayAuthorized(c.req.header("Authorization"), c.env.PIXIV_RELAY_SECRET)) {
     return c.json({ error: "unauthorized" }, 401);
@@ -352,6 +366,17 @@ app.post("/api/internal/jobs/complete", async (c) => {
   const jobId = String(body.jobId || "");
   const row = await getJob(c.env, jobId);
   if (!row) return c.json({ error: "任务不存在" }, 404);
+  if (row.status === "cancelled" || row.status === "done" || row.status === "error") {
+    return c.json({ ok: true, ignored: true });
+  }
+  if (body.status === "running") {
+    await markJob(c.env, jobId, "running", body.translated || null, null);
+    return c.json({ ok: true });
+  }
+  if (body.status === "cancelled") {
+    await markJob(c.env, jobId, "cancelled", body.translated || null, "已停止");
+    return c.json({ ok: true });
+  }
   if (body.status === "done" && body.translated) {
     if (row.work_id && row.source_hash && row.target_lang) {
       await saveTranslation(c.env, row.work_id, row.source_hash, row.target_lang, body.translated);
