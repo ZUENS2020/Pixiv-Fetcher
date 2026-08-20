@@ -120,13 +120,10 @@ async function callback(job, body) {
 }
 
 const queue = [];
-let busy = false;
+const MAX_JOBS = Math.max(1, Number(process.env.RELAY_CONCURRENCY || 5) || 5);
+let running = 0;
 
-async function pump() {
-  if (busy) return;
-  const job = queue.shift();
-  if (!job) return;
-  busy = true;
+async function runJob(job) {
   try {
     if (job.type === "translate") {
       const translated = await translateDocument(job.payload || {});
@@ -143,8 +140,16 @@ async function pump() {
       console.error("job callback failed", job.id, cbErr);
     }
   } finally {
-    busy = false;
+    running -= 1;
     void pump();
+  }
+}
+
+function pump() {
+  while (running < MAX_JOBS && queue.length) {
+    const job = queue.shift();
+    running += 1;
+    void runJob(job);
   }
 }
 
@@ -173,7 +178,7 @@ async function handleForward(payload, res) {
 const server = http.createServer(async (req, res) => {
   const path = (req.url || "/").split("?")[0];
   if (req.method === "GET" && path === "/health") {
-    json(res, 200, { ok: true, queue: queue.length, busy });
+    json(res, 200, { ok: true, queue: queue.length, running, concurrency: MAX_JOBS, busy: running > 0 });
     return;
   }
 

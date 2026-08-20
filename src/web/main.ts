@@ -171,6 +171,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const TRANSLATE_CONCURRENCY = 5;
+
+async function mapLimit<T>(items: T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+}
+
 type TranslateJob = {
   status: "queued" | "running" | "done" | "error";
   jobId?: string;
@@ -650,21 +665,25 @@ async function renderLibrary(root: HTMLElement) {
     btn.disabled = true;
     let ok = 0;
     let fail = 0;
-    for (let i = 0; i < novels.length; i += 1) {
-      batchStatus.className = "status";
-      batchStatus.textContent = `批量翻译 ${i + 1}/${novels.length}：「${novels[i].title}」`;
+    let running = 0;
+    const refresh = () => {
+      batchStatus.className = fail ? "status err" : "status";
+      batchStatus.textContent = `批量翻译：完成 ${ok}/${novels.length}，失败 ${fail}，进行中 ${running}（最多 ${TRANSLATE_CONCURRENCY} 路）`;
+    };
+    refresh();
+    await mapLimit(novels, TRANSLATE_CONCURRENCY, async (novel) => {
+      running += 1;
+      refresh();
       try {
-        await runTranslate(novels[i].id, (msg) => {
-          batchStatus.className = "status";
-          batchStatus.textContent = `批量翻译 ${i + 1}/${novels.length}：「${novels[i].title}」${msg}`;
-        });
+        await runTranslate(novel.id);
         ok += 1;
-      } catch (err) {
+      } catch {
         fail += 1;
-        batchStatus.className = "status err";
-        batchStatus.textContent = `「${novels[i].title}」失败：${err instanceof Error ? err.message : "翻译失败"}`;
+      } finally {
+        running -= 1;
+        refresh();
       }
-    }
+    });
     if (fail === 0) {
       batchStatus.className = "status ok";
       batchStatus.textContent = `已翻译 ${ok} 篇小说，打开阅读页即可看译文`;
