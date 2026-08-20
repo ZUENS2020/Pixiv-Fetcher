@@ -3,10 +3,11 @@
 Pixiv Fetcher 是**单用户自托管**应用：一个 Cloudflare Worker 提供网页与 API，可选一台能访问 `pixiv.net` 的 Docker 主机做 Ajax 中继和后台翻译。
 
 ```text
-浏览器 ──► Cloudflare Worker（前端 + API + D1 + R2）
-                 │
-                 ├── 可选：HTTPS 中继（Docker）──► pixiv.net ajax
-                 └── 可选：同一中继排队调用你的 LLM，写回 Worker
+MCP 客户端 ──► Cloudflare Access ──► Worker /mcp
+浏览器     ──► （可选同一 Access）──► Worker 网页 + /api
+                                         │
+                                         ├── 可选：HTTPS 中继（Docker）──► pixiv.net ajax
+                                         └── 可选：同一中继排队调用你的 LLM，写回 Worker
 ```
 
 Cookie 与 LLM 密钥用 `COOKIE_ENC_KEY` 加密后只存在你的 D1，不会进 Git。
@@ -115,6 +116,10 @@ npm run dev
 
 本地翻译后台可另开终端：`npm run relay`（默认 `http://127.0.0.1:8788`），并在 `.dev.vars` 里写上 `PIXIV_RELAY_URL` 与 `PIXIV_RELAY_SECRET`。
 
+## 6. 远程 MCP
+
+说明、工具列表和客户端配置见 **[MCP.md](MCP.md)**。Worker 在 `/mcp` 提供无鉴权 MCP，生产请用 Cloudflare Access。
+
 ## 故障排查
 
 | 现象 | 处理 |
@@ -123,3 +128,5 @@ npm run dev
 | 翻译一直 queued | 看中继容器日志；确认 `PIXIV_RELAY_*` 与 `.env` 一致；Worker 必须是 HTTPS，回调才能成功 |
 | D1 报错 unknown database | `wrangler.jsonc` 的 `database_id` 不是当前账号的库 |
 | 换过 `COOKIE_ENC_KEY` | 在设置页重新录入 Cookie 和 LLM Key |
+| MCP 连不上 / 返回 HTML | Access 登录墙，或 `/mcp` 被静态页吃掉；确认 `run_worker_first` 含 `/mcp`，客户端 URL 以 `/mcp` 结尾 |
+| MCP 403 Host | 用实际访问的 Host（自定义域名或 workers.dev），不要混用 |

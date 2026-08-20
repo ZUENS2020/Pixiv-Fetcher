@@ -6,7 +6,7 @@
 
 仅供用自己账号已能访问的内容做个人离线，请遵守 Pixiv 服务条款与当地法律。
 
-完整步骤见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
+完整步骤见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。远程 MCP 见 **[docs/MCP.md](docs/MCP.md)**。
 
 ## 功能
 
@@ -15,6 +15,7 @@
 - 抓取入库：原图 / 动图 zip / 小说 txt 写入 R2
 - 站内阅读；全文翻译在中继后台排队，关页面也会写回 D1
 - 设置页粘贴 `PHPSESSID`（或整段 Cookie），校验后存 D1
+- 远程 MCP（`/mcp`），鉴权交给 Cloudflare Access
 
 抓取逻辑对齐 [Powerful Pixiv Downloader](https://github.com/xuejianxianzun/PixivBatchDownloader)。
 
@@ -22,7 +23,7 @@
 
 | 组件 | 作用 |
 | --- | --- |
-| Cloudflare Worker | 网页、API、加密会话、D1/R2 |
+| Cloudflare Worker | 网页、API、MCP、加密会话、D1/R2 |
 | D1 `pixiv-fetcher` | 会话、作品索引、译文、后台任务 |
 | R2 `pixiv-fetcher` | `works/{kind}/{id}/` 原文件 |
 | Docker 中继（可选） | Pixiv Ajax 转发、LLM 长任务 |
