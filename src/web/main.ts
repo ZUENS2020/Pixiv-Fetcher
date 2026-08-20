@@ -1,3 +1,5 @@
+import { extractPixivUrls } from "../worker/parse";
+
 type Session = {
   bound: boolean;
   userId?: string;
@@ -162,13 +164,7 @@ function brandHeader(title = ""): HTMLElement {
 }
 
 function extractUrls(raw: string): string[] {
-  const tokens = raw.split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean);
-  const urls: string[] = [];
-  for (const t of tokens) {
-    if (!/pixiv\.net/i.test(t)) continue;
-    urls.push(/^https?:\/\//i.test(t) ? t : `https://${t}`);
-  }
-  return [...new Set(urls)];
+  return extractPixivUrls(raw);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -222,12 +218,12 @@ async function renderHome(root: HTMLElement, session: Session) {
   root.innerHTML = "";
   root.append(
     brandHeader(),
-    $(`<p class="lede">粘贴一条或多条分享链接（换行 / 空格分隔）。「抓取入库」和「下载」会按顺序处理全部链接；系列与用户页每次最多约 80 件。</p>`),
+    $(`<p class="lede">把手机分享文案整段贴进来即可，会自动找出其中的 pixiv 链接。「抓取入库」和「下载」按顺序处理全部识别到的链接；系列与用户页每次最多约 80 件。</p>`),
   );
 
   const form = $(`<div>
-    <label for="url">作品 / 系列链接（可多条）</label>
-    <textarea id="url" placeholder="https://www.pixiv.net/artworks/…&#10;https://www.pixiv.net/novel/show.php?id=…"></textarea>
+      <label for="url">分享文案或链接（可混杂文字）</label>
+      <textarea id="url" placeholder="把 App 分享出来的标题、标签和链接整段粘贴到这里"></textarea>
     <div class="row actions-main">
       <button type="button" id="previewBtn">预览</button>
       <button type="button" class="ghost" id="crawlBtn">抓取入库</button>
@@ -276,10 +272,16 @@ async function renderHome(root: HTMLElement, session: Session) {
   }
 
   previewBtn.addEventListener("click", async () => {
-    currentUrl = extractUrls(urlEl.value)[0] || urlEl.value.trim();
+    const urls = extractUrls(urlEl.value);
+    currentUrl = urls[0] || "";
     libraryId = null;
     status.className = "status";
-    status.textContent = "正在读取…";
+    if (!currentUrl) {
+      status.className = "status err";
+      status.textContent = "没有识别到 pixiv 链接，把分享文案整段贴进来即可";
+      return;
+    }
+    status.textContent = urls.length > 1 ? `识别到 ${urls.length} 条，先预览第 1 条…` : "正在读取…";
     crawlBtn.disabled = true;
     downloadBtn.disabled = true;
     result.innerHTML = "";
@@ -301,7 +303,7 @@ async function renderHome(root: HTMLElement, session: Session) {
     const urls = extractUrls(urlEl.value);
     if (!urls.length) {
       status.className = "status err";
-      status.textContent = "请粘贴至少一条 pixiv.net 链接";
+      status.textContent = "没有识别到 pixiv 链接，把分享文案整段贴进来即可";
       return;
     }
     crawlBtn.disabled = true;
@@ -359,7 +361,7 @@ async function renderHome(root: HTMLElement, session: Session) {
     const urls = extractUrls(urlEl.value);
     if (!urls.length) {
       status.className = "status err";
-      status.textContent = "请粘贴至少一条 pixiv.net 链接";
+      status.textContent = "没有识别到 pixiv 链接，把分享文案整段贴进来即可";
       return;
     }
     downloadBtn.disabled = true;

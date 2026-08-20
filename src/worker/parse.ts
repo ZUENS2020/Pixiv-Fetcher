@@ -8,6 +8,55 @@ export type ParsedLink =
   | { kind: "user"; userId: string; types: UserWorkKind[] }
   | { kind: "bookmarks"; userId: string; type: "illusts" | "novels" };
 
+const PIXIV_URL_RE =
+  /(?:https?:\/\/)?(?:[\w-]+\.)*(?:pixiv\.net|pixiv\.me)\/[-A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%]*/gi;
+
+function pixivLinkKey(parsed: ParsedLink): string {
+  switch (parsed.kind) {
+    case "illust":
+      return `illust:${parsed.unlisted ? "u" : "p"}:${parsed.id}`;
+    case "novel":
+      return `novel:${parsed.unlisted ? "u" : "p"}:${parsed.id}`;
+    case "novel_series":
+      return `novel_series:${parsed.id}`;
+    case "manga_series":
+      return `manga_series:${parsed.id}`;
+    case "user":
+      return `user:${parsed.userId}:${parsed.types.join(",")}`;
+    case "bookmarks":
+      return `bookmarks:${parsed.type}:${parsed.userId}`;
+  }
+}
+
+function tidyUrlToken(token: string): string {
+  return token.replace(/[)\]}>.,;:!?、。，；：！？…'"”’「」『』【】（）]+$/g, "");
+}
+
+/** Pull every recognizable Pixiv work/user URL out of arbitrary pasted text. */
+export function extractPixivUrls(raw: string): string[] {
+  const text = String(raw || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/&amp;/gi, "&");
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(PIXIV_URL_RE)) {
+    let token = tidyUrlToken(match[0]);
+    if (!token) continue;
+    if (!/^https?:\/\//i.test(token)) token = `https://${token}`;
+    const parsed = parsePixivUrl(token);
+    if (!parsed) continue;
+    const key = pixivLinkKey(parsed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push(token);
+  }
+  return found;
+}
+
+export function firstPixivUrl(raw: string): string | null {
+  return extractPixivUrls(raw)[0] ?? null;
+}
+
 export function parsePixivUrl(raw: string): ParsedLink | null {
   let text = raw.trim();
   if (!text) return null;

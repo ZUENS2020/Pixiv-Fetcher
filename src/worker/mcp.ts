@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { crawlUrl, previewWork } from "./download";
+import { extractPixivUrls } from "./parse";
 import type { Env } from "./env";
 import {
   enqueueTranslateJob,
@@ -57,8 +58,8 @@ export function createPixivMcp(env: Env, request: Request) {
   server.registerTool(
     "preview_work",
     {
-      description: "预览 Pixiv 链接（插画/漫画/小说/系列/用户/收藏），写入 D1 元数据但不下载原文件",
-      inputSchema: { url: z.string().describe("Pixiv 分享链接") },
+      description: "预览一段文字里的第一条 Pixiv 链接（可把手机分享文案整段贴进来）",
+      inputSchema: { url: z.string().describe("Pixiv 链接或含链接的分享文案") },
     },
     async ({ url }) => {
       try {
@@ -73,13 +74,26 @@ export function createPixivMcp(env: Env, request: Request) {
   server.registerTool(
     "crawl_work",
     {
-      description: "抓取 Pixiv 链接入库（原图 / 小说 txt / 动图 zip 写入 R2）",
-      inputSchema: { url: z.string().describe("Pixiv 分享链接") },
+      description: "从一段文字里找出全部 Pixiv 链接并抓取入库",
+      inputSchema: { url: z.string().describe("Pixiv 链接或含链接的分享文案") },
     },
     async ({ url }) => {
       try {
         const sess = await readSess(env);
-        return mcpJson(await crawlUrl(env, request, sess, url));
+        const urls = extractPixivUrls(url);
+        if (!urls.length) throw new PixivError("无法识别的 Pixiv 链接", 400, "upstream");
+        if (urls.length === 1) return mcpJson(await crawlUrl(env, request, sess, urls[0]));
+        const results = [];
+        for (const item of urls) {
+          results.push(await crawlUrl(env, request, sess, item));
+        }
+        return mcpJson({
+          title: `${urls.length} 条链接`,
+          count: results.reduce((n, r) => n + r.count, 0),
+          complete: results.reduce((n, r) => n + r.complete, 0),
+          restricted: results.reduce((n, r) => n + r.restricted, 0),
+          works: results.flatMap((r) => r.works),
+        });
       } catch (err) {
         return mcpError(err);
       }

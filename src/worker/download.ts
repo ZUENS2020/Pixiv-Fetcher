@@ -18,7 +18,7 @@ import {
   type PixivClient,
   validateSession,
 } from "./pixiv";
-import { contentDisposition, originalPageUrl, parsePixivUrl, safeFilename, type ParsedLink } from "./parse";
+import { contentDisposition, firstPixivUrl, originalPageUrl, parsePixivUrl, safeFilename, type ParsedLink } from "./parse";
 import {
   getArtworkWork,
   getObject,
@@ -411,12 +411,14 @@ export async function crawlUrl(
   sess: { phpSessId: string; cookieHeader?: string; userAgent?: string } | null,
   rawUrl: string,
 ): Promise<CrawlResult> {
-  const parsed = parsePixivUrl(rawUrl);
+  const url = firstPixivUrl(rawUrl);
+  const parsed = url ? parsePixivUrl(url) : parsePixivUrl(rawUrl);
   if (!parsed) throw new PixivError("无法识别的 Pixiv 链接", 400, "upstream");
+  const source = url || rawUrl.trim();
   const client = clientFromSess(env, request, sess);
-  const { title, works } = await cacheParsed(env, client, parsed, rawUrl.trim());
+  const { title, works } = await cacheParsed(env, client, parsed, source);
   if (!works.length) throw new PixivError("没有抓到可保存的作品", 404, "not_found");
-  await insertCrawlJob(env, rawUrl.trim(), parsed.kind, works.length, "ok");
+  await insertCrawlJob(env, source, parsed.kind, works.length, "ok");
   return crawlSummary(title, works);
 }
 
@@ -527,12 +529,14 @@ export async function downloadWork(
   sess: { phpSessId: string; cookieHeader?: string; userAgent?: string } | null,
   rawUrl: string,
 ): Promise<Response> {
-  const parsed = parsePixivUrl(rawUrl);
+  const url = firstPixivUrl(rawUrl);
+  const parsed = url ? parsePixivUrl(url) : parsePixivUrl(rawUrl);
   if (!parsed) throw new PixivError("无法识别的 Pixiv 链接", 400, "upstream");
+  const source = url || rawUrl.trim();
   const client = clientFromSess(env, request, sess);
-  const { title, works } = await cacheParsed(env, client, parsed, rawUrl.trim());
+  const { title, works } = await cacheParsed(env, client, parsed, source);
   if (!works.length) throw new PixivError("没有抓到可保存的作品", 404, "not_found");
-  await insertCrawlJob(env, rawUrl.trim(), parsed.kind, works.length, "ok");
+  await insertCrawlJob(env, source, parsed.kind, works.length, "ok");
   if (works.length === 1) return serveWork(env, works[0]);
   const zipId =
     parsed.kind === "user" || parsed.kind === "bookmarks" ? parsed.userId : parsed.id;
@@ -563,11 +567,12 @@ export async function previewWork(
   sess: { phpSessId: string; cookieHeader?: string; userAgent?: string } | null,
   rawUrl: string,
 ): Promise<Preview> {
-  const parsed = parsePixivUrl(rawUrl);
+  const url = firstPixivUrl(rawUrl);
+  const parsed = url ? parsePixivUrl(url) : parsePixivUrl(rawUrl);
   if (!parsed) throw new PixivError("无法识别的 Pixiv 链接", 400, "upstream");
   const client = clientFromSess(env, request, sess);
   const bound = Boolean(sess?.phpSessId);
-  return previewParsed(env, client, parsed, bound, rawUrl.trim());
+  return previewParsed(env, client, parsed, bound, url || rawUrl.trim());
 }
 
 async function previewParsed(
