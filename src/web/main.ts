@@ -755,25 +755,43 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
   }
   const source = data.text || "";
   let translated = data.translation || "";
+  const initialView = translated ? "dst" : "src";
   const bar = $(`<div class="reader-toolbar">
     <button type="button" class="tonal" id="trAll" ${data.llm.configured ? "" : "disabled"}>翻译全文</button>
     <a class="btn ghost" href="/settings">LLM 设置</a>
     <p class="help reader-hint" id="trHint">${data.llm.configured ? `目标：${escapeHtml(data.llm.targetLang)} · ${escapeHtml(data.llm.model)} · 后台 Docker` : "未配置 LLM，只能看原文"}</p>
   </div>`);
-  const pair = $(`<article class="doc-pair card">
-    <div>
+  const tabs = $(`<div class="reader-tabs" role="tablist" aria-label="原文或译文">
+    <button type="button" role="tab" data-view="dst" ${initialView === "dst" ? 'aria-selected="true"' : ""}>译文</button>
+    <button type="button" role="tab" data-view="src" ${initialView === "src" ? 'aria-selected="true"' : ""}>原文</button>
+    <button type="button" role="tab" data-view="both">对照</button>
+  </div>`);
+  const pair = $(`<article class="doc-pair card" data-view="${initialView}">
+    <div class="doc-col src-col">
       <h2>原文</h2>
       <div class="src doc">${escapeHtml(source)}</div>
     </div>
-    <div>
+    <div class="doc-col dst-col">
       <h2>译文</h2>
       <div class="dst doc ${translated ? "" : "empty"}" id="dst">${translated ? escapeHtml(translated) : "尚未翻译"}</div>
     </div>
   </article>`);
-  root.append(bar, pair);
+  root.append(bar, tabs, pair);
   const hint = bar.querySelector("#trHint") as HTMLElement;
   const dst = pair.querySelector("#dst") as HTMLElement;
   const btn = bar.querySelector("#trAll") as HTMLButtonElement;
+
+  function setView(view: string) {
+    pair.dataset.view = view;
+    for (const tab of tabs.querySelectorAll<HTMLButtonElement>("[data-view]")) {
+      tab.setAttribute("aria-selected", tab.dataset.view === view ? "true" : "false");
+    }
+  }
+
+  tabs.addEventListener("click", (ev) => {
+    const tab = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-view]");
+    if (tab?.dataset.view) setView(tab.dataset.view);
+  });
 
   btn.addEventListener("click", async () => {
     btn.disabled = true;
@@ -789,6 +807,7 @@ async function renderNovelReader(root: HTMLElement, data: ReaderPayload) {
       dst.className = "dst doc";
       dst.textContent = r.translated;
       hint.textContent = r.cached ? "已使用缓存译文" : "全文翻译完成";
+      setView("dst");
     } catch (err) {
       dst.className = "dst doc empty";
       dst.textContent = err instanceof Error ? err.message : "翻译失败";
